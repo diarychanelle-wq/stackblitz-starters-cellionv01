@@ -14,9 +14,6 @@ let pendingQueue = []; // { playerId, nickname, answer }
 let currentPrompt = null;
 let currentTurnIndex = 0;
 let startPlayerIndex = 0;
-let turnTimer = null;
-let timeLeft = 0;
-let questionDuration = 15;
 let roundActive = false;
 
 const EXTRA_LIFE_THRESHOLD = 1000;
@@ -27,59 +24,37 @@ function broadcastState() {
     pendingQueue,
     currentPrompt,
     currentTargetId: players[currentTurnIndex]?.id || null,
-    timeLeft,
     roundActive
   });
 }
 
 function advanceTurn() {
-  clearInterval(turnTimer);
-
-  // Check if anyone is even left alive first
   const alivePlayers = players.filter(p => p.lives > 0);
   if (alivePlayers.length <= 1) {
     endGame(alivePlayers[0]);
     return;
   }
 
-  // Move to next alive player
+  // Find the next living player sequentially in order
+  let nextIndex = currentTurnIndex;
   let attempts = 0;
   do {
-    currentTurnIndex = (currentTurnIndex + 1) % players.length;
+    nextIndex = (nextIndex + 1) % players.length;
     attempts++;
-  } while (players[currentTurnIndex].lives <= 0 && attempts <= players.length);
+  } while (players[nextIndex].lives <= 0 && attempts <= players.length);
 
-  // Check if the hot potato made a full orbit back to the starting player
-  if (currentTurnIndex === startPlayerIndex || attempts > players.length) {
+  // Check if we completed a full circle back to the starting player
+  if (nextIndex === startPlayerIndex || attempts > players.length) {
     roundActive = false;
     currentPrompt = "Orbit complete! Waiting for teacher to finish grading...";
-    broadcastState();
-    return;
+  } else {
+    currentTurnIndex = nextIndex;
   }
 
-  startTurnTimer();
-}
-
-function startTurnTimer() {
-  if (!roundActive) return;
-  
-  // Clear old timer if running
-  if (turnTimer) clearInterval(turnTimer);
-
-  turnTimer = setInterval(() => {
-    if (!roundActive) return;
-    
-    // Find next living player using currentTurnIndex (fixed variable match)
-    do {
-      currentTurnIndex = (currentTurnIndex + 1) % players.length;
-    } while (players[currentTurnIndex].lives <= 0);
-
-    broadcastState();
-  }, questionDuration * 1000); 
+  broadcastState();
 }
 
 function endGame(winner) {
-  clearInterval(turnTimer);
   roundActive = false;
   
   currentPrompt = winner 
@@ -87,7 +62,7 @@ function endGame(winner) {
     : `Round over! All cells perished.`;
   
   if (winner) {
-    winner.atp += 150; // Victory bonus ATP!
+    winner.atp += 150; // Victory bonus ATP
   }
   
   broadcastState();
@@ -111,7 +86,7 @@ io.on('connection', (socket) => {
   });
 
   // 2. Teacher Starts New Prompt Round
-  socket.on('start_round', ({ prompt, duration }) => {
+  socket.on('start_round', ({ prompt }) => {
     if (players.length === 0) return;
     if (pendingQueue.length > 0) {
       socket.emit('error_msg', 'Finish grading pending answers first!');
@@ -119,17 +94,15 @@ io.on('connection', (socket) => {
     }
 
     currentPrompt = prompt;
-    questionDuration = parseInt(duration) || 15;
     roundActive = true;
     startPlayerIndex = 0;
     currentTurnIndex = 0;
 
     players.forEach(p => { if (p.lives > 0) p.status = 'waiting'; });
-    startTurnTimer();
     broadcastState();
   });
 
-  // 3. Player Submits Answer -> Goes to Pending Queue
+  // 3. Player Submits Answer -> Goes to Pending Queue & Advances Turn Instantly
   socket.on('submit_answer', (answerText) => {
     if (!roundActive) return;
     const activePlayer = players[currentTurnIndex];
@@ -155,7 +128,7 @@ io.on('connection', (socket) => {
 
     if (player) {
       if (gradeType === 'WRONG') {
-        player.lives = Math.max(0, player.lives - 1); // Fixed missing operator
+        player.lives = Math.max(0, player.lives - 1);
         player.status = 'wrong';
       } else {
         const atpAward = parseInt(gradeType) || 25; 
@@ -176,7 +149,6 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // If orbit is done AND teacher just graded the final card, clear prompt for next round
     if (!roundActive && pendingQueue.length === 0) {
       currentPrompt = "All graded! Ready for next prompt.";
     }
@@ -186,15 +158,11 @@ io.on('connection', (socket) => {
 
   // 5. Reset Game / New Round Handler
   socket.on('reset_game', () => {
-    if (turnTimer) clearInterval(turnTimer);
-
-    // Reset player lives & stats
     players.forEach(p => {
       p.lives = 2;
       p.status = 'waiting';
     });
 
-    // Clear queues & game states
     pendingQueue = [];
     roundActive = false;
     currentTurnIndex = 0;
@@ -220,4 +188,3 @@ const PORT = process.env.PORT || 3004;
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Cellion server running on port ${PORT}`);
 });
-
